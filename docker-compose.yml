@@ -1,0 +1,116 @@
+# =============================================================
+# ADIMLAR:
+#   1. PostgreSQL veritabanı servisini tanımla  (db)
+#   2. FastAPI backend servisini tanımla        (backend)
+#   3. Streamlit frontend servisini tanımla     (frontend)
+#   4. Kalıcı veri hacmini (volume) tanımla
+#
+# KURULUM:
+#   1. backend/.env dosyasını oluşturun:
+#          cp backend/.env.example backend/.env
+#          GEMINI_API_KEY değerini doldurun
+#   2. Tüm servisleri başlatın:
+#          docker compose up --build
+#   3. Servislere erişin:
+#          Streamlit    →  http://localhost:8501
+#          FastAPI Docs →  http://localhost:8000/docs
+#          PostgreSQL   →  localhost:5433
+#   4. Durdurmak için:
+#          docker compose down
+#          docker compose down -v   (veritabanını da sil)
+#
+# NOT:
+#   depends_on: Servis başlama sırasını belirler.
+#   healthcheck: Servisin gerçekten hazır olup olmadığını kontrol eder.
+#   volumes (mount): Geliştirme sırasında kod değişikliklerini
+#                    container'a anında yansıtır (hot-reload).
+# =============================================================
+
+version: "3.9"
+
+services:
+
+  # =========================================================
+  # 1. PostgreSQL veritabanı servisi
+  # =========================================================
+  # postgres:16-alpine: Resmi PostgreSQL 16 imajının Alpine Linux
+  # üzerindeki hafif versiyonu.
+  db:
+    image: postgres:16-alpine
+    container_name: yorum_analizi_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: yorum_analizi
+    volumes:
+      # Named volume: container silinse bile veriler korunur
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      # Host:Container — 5433 kullanıyoruz, çakışma olmasın diye
+      # (bilgisayarınızda başka bir PostgreSQL 5432'de çalışıyor olabilir)
+      - "5433:5432"
+    healthcheck:
+      # pg_isready: PostgreSQL bağlantı almaya hazır mı kontrol eder
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+  # =========================================================
+  # 2. FastAPI backend servisi
+  # =========================================================
+  backend:
+    build:
+      context: ./backend      # Dockerfile bu dizinde aranır
+      dockerfile: Dockerfile
+    container_name: yorum_analizi_backend
+    restart: unless-stopped
+    env_file:
+      # backend/.env dosyasındaki değişkenleri yükle (GEMINI_API_KEY vb.)
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        # "healthy" olmasını bekle — sadece çalışıyor olmak yetmez,
+        # pg_isready geçmeli. Yoksa backend bağlanamaz ve crash olur.
+        condition: service_healthy
+    volumes:
+      # Geliştirme kolaylığı: kod değişince container'a anında yansır
+      # Production'da bu satırı kaldırın — imaj içindeki kod kullanılsın
+      - ./backend:/app
+
+
+  # =========================================================
+  # 3. Streamlit frontend servisi
+  # =========================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: yorum_analizi_frontend
+    restart: unless-stopped
+    env_file:
+      - ./frontend/.env
+    environment:
+      # docker-compose içinde servis adı "backend" olduğu için
+      # bu URL ile FastAPI'ye ulaşırız (localhost değil!)
+      API_BASE_URL: http://backend:8000/api/v1
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+
+
+# =========================================================
+# 4. Kalıcı veri hacmi (volume)
+# =========================================================
+# Named volume: "docker compose down" yapılsa bile PostgreSQL
+# verileri bu volume'de korunur.
+# "docker compose down -v" ile birlikte volume da silinir.
+volumes:
+  postgres_data:
